@@ -32,6 +32,8 @@ jobs:
       - name: Checkout local repository
         uses: actions/checkout@v4
         with:
+          # Fetch all history to compare files correctly
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 2: Sync and Commit Steam Game Servers
@@ -55,7 +57,11 @@ jobs:
             exit 1
           fi
 
-          COMMITS_MADE=0
+          COMMITS_SINCE_LAST_PUSH=0
+          PROCESSED_COUNT=0
+          # Push changes in batches to save progress
+          BATCH_SIZE=500
+
           echo "Processing all apps and committing changes individually..."
           jq -c '.applist.apps[]' applist.json | while read -r app; do
             APP_ID=$(echo "$app" | jq -r '.appid')
@@ -69,14 +75,12 @@ jobs:
             FILEPATH="game-servers/steam/${FILENAME}.cidr"
             
             API_URL="https://api.steampowered.com/ISteamApps/GetSDRConfig/v1?appid=${APP_ID}"
-            IP_LIST=$(curl -s "$API_URL" | jq -r '.pops[].relays[]? | .ipv4, .ipv6 | select(. != null)')
+            IP_LIST=$(curl -s --max-time 10 "$API_URL" | jq -r '.pops[].relays[]? | .ipv4, .ipv6 | select(. != null)')
 
             if [ -n "$IP_LIST" ]; then
-              # Write new content to a temporary file
               TMP_FILE=$(mktemp)
               echo "$IP_LIST" > "$TMP_FILE"
 
-              # Only commit if the file is new or if its content has changed
               if [ ! -f "$FILEPATH" ] || ! diff -q "$TMP_FILE" "$FILEPATH" >/dev/null; then
                 echo "Changes found for: $GAME_NAME. Saving and committing..."
                 mv "$TMP_FILE" "$FILEPATH"
@@ -84,23 +88,29 @@ jobs:
                 git add "$FILEPATH"
                 COMMIT_DATE=$(TZ="Asia/Tehran" date +'%Y-%m-%d %H:%M:%S')
                 git commit -m "Auto-sync: Update IPs for $GAME_NAME on $COMMIT_DATE"
-                COMMITS_MADE=$((COMMITS_MADE + 1))
+                COMMITS_SINCE_LAST_PUSH=$((COMMITS_SINCE_LAST_PUSH + 1))
               else
-                # No changes, just remove the temp file
                 rm "$TMP_FILE"
               fi
             fi
+
+            PROCESSED_COUNT=$((PROCESSED_COUNT + 1))
+            # Push batch if size is reached
+            if [ "$PROCESSED_COUNT" -ge "$BATCH_SIZE" ]; then
+              if [ "$COMMITS_SINCE_LAST_PUSH" -gt 0 ]; then
+                echo "Batch size reached. Pushing $COMMITS_SINCE_LAST_PUSH new commit(s)..."
+                git push
+                COMMITS_SINCE_LAST_PUSH=0
+              fi
+              PROCESSED_COUNT=0
+            fi
           done
 
-          # Clean up the temporary applist file
-          rm applist.json
-
-          # Push all the new commits at the end of the process
-          if [ "$COMMITS_MADE" -gt 0 ]; then
-            echo "Pushing $COMMITS_MADE new commit(s)..."
+          # Final push for any remaining commits
+          if [ "$COMMITS_SINCE_LAST_PUSH" -gt 0 ]; then
+            echo "Pushing final $COMMITS_SINCE_LAST_PUSH new commit(s)..."
             git push
-          else
-            echo "No new commits were made. Nothing to push."
           fi
           
-          echo "Finished syncing all discoverable Steam game servers."
+          rm applist.json
+          echo "Finished processing batch."
