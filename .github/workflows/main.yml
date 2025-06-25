@@ -22,36 +22,67 @@ jobs:
     # Job steps
     steps:
       # Step 1: Checkout your repository's code
-      # This action downloads your repository's code so we can make changes to it
       - name: Checkout local repository
         uses: actions/checkout@v4
         with:
-          # Token is required to push changes at the end
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step 2: Sync data from the source repository
-      # This section can be duplicated for each source you want to sync
+      # Step 2: Sync Country IP Blocks
       - name: Sync from herrbischoff/country-ip-blocks
         run: |
-          echo "Cloning source repository..."
-          # Clone the source repository into a temporary directory
+          echo "Cloning source repository for country IPs..."
           git clone --depth 1 https://github.com/herrbischoff/country-ip-blocks.git temp_source_repo
 
-          echo "Syncing to custom directory names..."
-          # Create the destination directories with custom names
+          echo "Syncing country IPs to custom directory names..."
           mkdir -p ipv4-countries
           mkdir -p ipv6-countries
 
-          # Use rsync to copy the contents to the new custom directories
-          # rsync smartly copies only new or changed files
           rsync -av --delete temp_source_repo/ipv4/ ipv4-countries/
           rsync -av --delete temp_source_repo/ipv6/ ipv6-countries/
 
           echo "Cleaning up temporary directory..."
-          # Clean up the temporary directory after finishing
           rm -rf temp_source_repo
 
-      # Step 3: Commit and push changes if any exist
+      # Step 3: Sync Steam Game Server IPs
+      - name: Sync Steam Game Servers
+        run: |
+          # Install jq, a command-line JSON processor
+          sudo apt-get update && sudo apt-get install -y jq
+
+          echo "Syncing Steam game server IPs..."
+          mkdir -p game-servers/steam
+
+          # Map of AppIDs to Game Names. You can add more games here.
+          declare -A GAME_MAP
+          GAME_MAP=(
+            ["730"]="Counter-Strike 2"
+            ["570"]="Dota 2"
+            ["440"]="Team Fortress 2"
+          )
+
+          for APP_ID in "${!GAME_MAP[@]}"; do
+            GAME_NAME="${GAME_MAP[$APP_ID]}"
+            # Create a safe filename by replacing spaces with underscores
+            FILENAME=$(echo "$GAME_NAME" | tr ' ' '_')
+            
+            echo "Processing: $GAME_NAME (App ID: $APP_ID)"
+            
+            API_URL="https://api.steampowered.com/ISteamApps/GetSDRConfig/v1?appid=${APP_ID}"
+            curl -s "$API_URL" | jq -r '.pops[].relays[]? | .ipv4, .ipv6 | select(. != null)' > "game-servers/steam/${FILENAME}.cidr"
+
+            # Check if the file was created and is not empty
+            if [ -s "game-servers/steam/${FILENAME}.cidr" ]; then
+              echo "Successfully fetched IPs for $GAME_NAME."
+            else
+              echo "Warning: No IPs found for $GAME_NAME (App ID: ${APP_ID}). It might not have public server IPs."
+              # Remove the empty file to keep the repo clean
+              rm -f "game-servers/steam/${FILENAME}.cidr"
+            fi
+          done
+
+          echo "Finished syncing Steam game servers."
+
+      # Step 4: Commit and push changes if any exist
       - name: Commit and push changes
         run: |
           # Configure Git for committing with your details
