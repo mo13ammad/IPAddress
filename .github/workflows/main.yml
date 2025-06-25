@@ -1,0 +1,76 @@
+# Workflow Name
+name: Sync External Repositories
+
+# Triggers: When should this workflow run?
+on:
+  # Allows manual execution from the GitHub Actions tab
+  workflow_dispatch:
+
+  # Scheduled run: Every 30 minutes
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  sync:
+    # Use the latest version of Ubuntu for this job
+    runs-on: ubuntu-latest
+
+    # Grant write permissions to the GITHUB_TOKEN for this job
+    permissions:
+      contents: write
+
+    # Job steps
+    steps:
+      # Step 1: Checkout your repository's code
+      # This action downloads your repository's code so we can make changes to it
+      - name: Checkout local repository
+        uses: actions/checkout@v4
+        with:
+          # Token is required to push changes at the end
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 2: Sync data from the source repository
+      # This section can be duplicated for each source you want to sync
+      - name: Sync from herrbischoff/country-ip-blocks
+        run: |
+          echo "Cloning source repository..."
+          # Clone the source repository into a temporary directory
+          git clone --depth 1 https://github.com/herrbischoff/country-ip-blocks.git temp_source_repo
+
+          echo "Syncing to custom directory names..."
+          # Create the destination directories with custom names
+          mkdir -p ipv4-countries
+          mkdir -p ipv6-countries
+
+          # Use rsync to copy the contents to the new custom directories
+          # rsync smartly copies only new or changed files
+          rsync -av --delete temp_source_repo/ipv4/ ipv4-countries/
+          rsync -av --delete temp_source_repo/ipv6/ ipv6-countries/
+
+          echo "Cleaning up temporary directory..."
+          # Clean up the temporary directory after finishing
+          rm -rf temp_source_repo
+
+      # Step 3: Commit and push changes if any exist
+      - name: Commit and push changes
+        run: |
+          # Configure Git for committing with your details
+          git config --global user.name "mo13ammad"
+          git config --global user.email "mo13ammad@users.noreply.github.com"
+
+          # Stage all changes, including new and modified files
+          git add .
+
+          # Check if there are any staged changes to be committed
+          if ! git diff --staged --quiet; then
+            echo "Changes detected. Committing and pushing..."
+            
+            # Create a commit message with the date and time in Tehran time
+            COMMIT_DATE=$(TZ="Asia/Tehran" date +'%Y-%m-%d %H:%M:%S')
+            git commit -m "Auto-sync: Data updated on $COMMIT_DATE (Tehran Time)"
+            
+            # Push the changes to your repository
+            git push
+          else
+            echo "No changes to commit. Working tree is clean."
+          fi
