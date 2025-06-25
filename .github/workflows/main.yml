@@ -14,6 +14,8 @@ jobs:
   sync:
     # Use the latest version of Ubuntu for this job
     runs-on: ubuntu-latest
+    # Increase the timeout because fetching all apps can be time-consuming
+    timeout-minutes: 180
 
     # Grant write permissions to the GITHUB_TOKEN for this job
     permissions:
@@ -43,44 +45,55 @@ jobs:
           echo "Cleaning up temporary directory..."
           rm -rf temp_source_repo
 
-      # Step 3: Sync Steam Game Server IPs
+      # Step 3: Sync ALL Steam Game Server IPs
       - name: Sync Steam Game Servers
         run: |
           # Install jq, a command-line JSON processor
           sudo apt-get update && sudo apt-get install -y jq
 
-          echo "Syncing Steam game server IPs..."
+          echo "Creating game server directory..."
           mkdir -p game-servers/steam
 
-          # Map of AppIDs to Game Names. You can add more games here.
-          declare -A GAME_MAP
-          GAME_MAP=(
-            ["730"]="Counter-Strike 2"
-            ["570"]="Dota 2"
-            ["440"]="Team Fortress 2"
-          )
+          echo "Fetching the complete list of Steam apps..."
+          # Fetch the entire app list from Steam's API and save to a temporary file
+          curl -s "https://api.steampowered.com/ISteamApps/GetAppList/v2/" -o applist.json
 
-          for APP_ID in "${!GAME_MAP[@]}"; do
-            GAME_NAME="${GAME_MAP[$APP_ID]}"
-            # Create a safe filename by replacing spaces with underscores
-            FILENAME=$(echo "$GAME_NAME" | tr ' ' '_')
+          # Check if the applist was fetched successfully
+          if [ ! -s applist.json ]; then
+            echo "Error: Failed to fetch Steam app list."
+            exit 1
+          fi
+
+          echo "Processing all apps... This may take a long time."
+          # Iterate over each app from the applist.json file
+          # The 'jq -c' command outputs each JSON object on a single line for easier processing in the shell
+          jq -c '.applist.apps[]' applist.json | while read -r app; do
+            APP_ID=$(echo "$app" | jq -r '.appid')
+            GAME_NAME=$(echo "$app" | jq -r '.name')
+
+            # Skip apps with no name or very short names
+            if [ -z "$GAME_NAME" ] || [ ${#GAME_NAME} -lt 2 ]; then
+              continue
+            fi
             
-            echo "Processing: $GAME_NAME (App ID: $APP_ID)"
+            # Create a safe filename (replace invalid characters with underscore)
+            FILENAME=$(echo "$GAME_NAME" | tr -c '[:alnum:]_.-' '_')
+            FILEPATH="game-servers/steam/${FILENAME}.cidr"
             
+            # Fetch server IPs for the current App ID
             API_URL="https://api.steampowered.com/ISteamApps/GetSDRConfig/v1?appid=${APP_ID}"
-            curl -s "$API_URL" | jq -r '.pops[].relays[]? | .ipv4, .ipv6 | select(. != null)' > "game-servers/steam/${FILENAME}.cidr"
+            IP_LIST=$(curl -s "$API_URL" | jq -r '.pops[].relays[]? | .ipv4, .ipv6 | select(. != null)')
 
-            # Check if the file was created and is not empty
-            if [ -s "game-servers/steam/${FILENAME}.cidr" ]; then
-              echo "Successfully fetched IPs for $GAME_NAME."
-            else
-              echo "Warning: No IPs found for $GAME_NAME (App ID: ${APP_ID}). It might not have public server IPs."
-              # Remove the empty file to keep the repo clean
-              rm -f "game-servers/steam/${FILENAME}.cidr"
+            # If the IP list is not empty, write it to the file
+            if [ -n "$IP_LIST" ]; then
+              echo "Found server IPs for: $GAME_NAME (AppID: $APP_ID). Saving to $FILENAME.cidr"
+              echo "$IP_LIST" > "$FILEPATH"
             fi
           done
-
-          echo "Finished syncing Steam game servers."
+          
+          echo "Finished syncing all discoverable Steam game servers."
+          # Clean up the temporary applist file
+          rm applist.json
 
       # Step 4: Commit and push changes if any exist
       - name: Commit and push changes
