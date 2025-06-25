@@ -12,6 +12,11 @@ on:
 
 jobs:
   sync-games:
+    # Prevent this workflow from running concurrently with itself.
+    concurrency:
+      group: ${{ github.workflow }}
+      cancel-in-progress: false
+      
     # Use the latest version of Ubuntu for this job
     runs-on: ubuntu-latest
     # Increase the timeout because fetching all apps can be time-consuming
@@ -29,11 +34,15 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Step 2: Sync ALL Steam Game Server IPs in Parallel
-      - name: Sync Steam Game Servers
+      # Step 2: Sync and Commit Steam Game Servers
+      - name: Sync and Commit Steam Game Servers
         run: |
-          # Install jq and coreutils (for nproc)
-          sudo apt-get update && sudo apt-get install -y jq coreutils
+          # Install jq, a command-line JSON processor
+          sudo apt-get update && sudo apt-get install -y jq
+
+          # Configure Git for committing with your details
+          git config --global user.name "mo13ammad"
+          git config --global user.email "mo13ammad@users.noreply.github.com"
 
           echo "Creating game server directory..."
           mkdir -p game-servers/steam
@@ -45,78 +54,53 @@ jobs:
             echo "Error: Failed to fetch Steam app list."
             exit 1
           fi
-          
-          # Define a function to process a single app. This will be run in parallel.
-          process_app() {
-            local app_json=$1
-            local APP_ID
-            local GAME_NAME
-            local FILENAME
-            local FILEPATH
-            local API_URL
-            local IP_LIST
 
-            APP_ID=$(echo "$app_json" | jq -r '.appid')
-            GAME_NAME=$(echo "$app_json" | jq -r '.name')
+          COMMITS_MADE=0
+          echo "Processing all apps and committing changes individually..."
+          jq -c '.applist.apps[]' applist.json | while read -r app; do
+            APP_ID=$(echo "$app" | jq -r '.appid')
+            GAME_NAME=$(echo "$app" | jq -r '.name')
 
-            # Skip apps with no name or very short names
             if [ -z "$GAME_NAME" ] || [ ${#GAME_NAME} -lt 2 ]; then
-              return
+              continue
             fi
             
-            # Create a safe filename (replace invalid characters with an underscore)
             FILENAME=$(echo "$GAME_NAME" | tr -c '[:alnum:]_.-' '_')
             FILEPATH="game-servers/steam/${FILENAME}.cidr"
             
-            # Fetch server IPs for the current App ID
             API_URL="https://api.steampowered.com/ISteamApps/GetSDRConfig/v1?appid=${APP_ID}"
             IP_LIST=$(curl -s "$API_URL" | jq -r '.pops[].relays[]? | .ipv4, .ipv6 | select(. != null)')
 
-            # If the IP list is not empty, write it to the file
             if [ -n "$IP_LIST" ]; then
-              # Use a lock to prevent race conditions when echoing to the console
-              (
-                flock 200
-                echo "Found IPs for: $GAME_NAME (AppID: $APP_ID)"
-              ) 200>/tmp/echo.lock
-              echo "$IP_LIST" > "$FILEPATH"
+              # Write new content to a temporary file
+              TMP_FILE=$(mktemp)
+              echo "$IP_LIST" > "$TMP_FILE"
+
+              # Only commit if the file is new or if its content has changed
+              if [ ! -f "$FILEPATH" ] || ! diff -q "$TMP_FILE" "$FILEPATH" >/dev/null; then
+                echo "Changes found for: $GAME_NAME. Saving and committing..."
+                mv "$TMP_FILE" "$FILEPATH"
+                
+                git add "$FILEPATH"
+                COMMIT_DATE=$(TZ="Asia/Tehran" date +'%Y-%m-%d %H:%M:%S')
+                git commit -m "Auto-sync: Update IPs for $GAME_NAME on $COMMIT_DATE"
+                COMMITS_MADE=$((COMMITS_MADE + 1))
+              else
+                # No changes, just remove the temp file
+                rm "$TMP_FILE"
+              fi
             fi
-          }
-          
-          # Export the function so it's available to sub-shells used by xargs
-          export -f process_app
-          
-          # Determine the number of parallel jobs based on available CPU cores
-          MAX_JOBS=$(nproc)
-          echo "Processing all apps in parallel with up to $MAX_JOBS jobs... This may take a long time."
-          
-          # Use xargs to run the process_app function in parallel for each app
-          jq -c '.applist.apps[]' applist.json | xargs -d '\n' -n 1 -P "$MAX_JOBS" -I {} bash -c 'process_app "{}"'
-          
+          done
+
           # Clean up the temporary applist file
           rm applist.json
-          echo "Finished syncing all discoverable Steam game servers."
 
-      # Step 3: Commit and push changes if any exist
-      - name: Commit and push changes
-        run: |
-          # Configure Git for committing with your details
-          git config --global user.name "mo13ammad"
-          git config --global user.email "mo13ammad@users.noreply.github.com"
-
-          # Stage changes only for the game server directory
-          git add game-servers/
-
-          # Check if there are any staged changes to be committed
-          if ! git diff --staged --quiet; then
-            echo "Game server changes detected. Committing and pushing..."
-            
-            # Create a commit message with the date and time in Tehran time
-            COMMIT_DATE=$(TZ="Asia/Tehran" date +'%Y-%m-%d %H:%M:%S')
-            git commit -m "Auto-sync: Steam game server data updated on $COMMIT_DATE (Tehran Time)"
-            
-            # Push the changes to your repository
+          # Push all the new commits at the end of the process
+          if [ "$COMMITS_MADE" -gt 0 ]; then
+            echo "Pushing $COMMITS_MADE new commit(s)..."
             git push
           else
-            echo "No changes detected for game servers."
+            echo "No new commits were made. Nothing to push."
           fi
+          
+          echo "Finished syncing all discoverable Steam game servers."
