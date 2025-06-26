@@ -1,0 +1,78 @@
+# نام ورک‌فلو که در بخش Actions گیت‌هاب نمایش داده می‌شود
+name: Update Social IP Ranges
+
+# تعریف زمان‌بندی و شرایط اجرای ورک‌فلو
+on:
+  # این گزینه به شما اجازه می‌دهد ورک‌فلو را به صورت دستی هم اجرا کنید
+  workflow_dispatch:
+
+  # اجرای خودکار در زمان‌بندی مشخص
+  schedule:
+    # این کد به معنی "اجرا در دقیقه صفر هر ساعت" است (یعنی رأس هر ساعت)
+    - cron: '0 * * * *'
+
+# تعریف کارها (Jobs) که باید در ورک‌فلو انجام شوند
+jobs:
+  update-ips:
+    # استفاده از آخرین نسخه اوبونتو برای اجرای دستورات
+    runs-on: ubuntu-latest
+    
+    # مراحل اجرایی این کار
+    steps:
+      # مرحله اول: دریافت کدهای موجود در ریپازیتوری شما
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # مرحله دوم: ایجاد پوشه 'app' در صورت عدم وجود
+      - name: Create app directory
+        run: mkdir -p app
+
+      # مرحله سوم: دریافت لیست IP ها و ذخیره در فایل‌های مربوطه
+      - name: Fetch IP Ranges
+        run: |
+          # آدرس‌های زیر از پروژه متن‌باز و معتبر FireHOL گرفته شده‌اند که لیست‌های بلاک را نگهداری می‌کند.
+          # شما می‌توانید لیست‌های کامل‌تر را در این آدرس پیدا کنید: https://github.com/firehol/blocklist-ipsets
+          # نکته: آدرس‌های IP واتس‌اپ و اینستاگرام معمولاً بخشی از رنج شبکه فیسبوک هستند.
+
+          echo "Downloading IP lists..."
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/telegram.netset" -o app/telegram.cidr || echo "Failed to download Telegram IPs"
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/facebook.netset" -o app/whatsapp.cidr || echo "Failed to download WhatsApp IPs"
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/facebook.netset" -o app/instagram.cidr || echo "Failed to download Instagram IPs"
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/facebook.netset" -o app/facebook.cidr || echo "Failed to download Facebook IPs"
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/twitter.netset" -o app/twitter.cidr || echo "Failed to download Twitter IPs"
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/tiktok.netset" -o app/tiktok.cidr || echo "Failed to download TikTok IPs"
+          curl "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/discord.netset" -o app/discord.cidr || echo "Failed to download Discord IPs"
+          
+          echo "Cleaning up downloaded files..."
+          # حذف خطوط کامنت (که با # شروع می‌شوند) از فایل‌های دانلود شده
+          # این کار باعث می‌شود فقط آدرس‌های IP در فایل‌ها باقی بمانند
+          for file in app/*.cidr; do
+            if [ -f "$file" ]; then
+              # یک فایل موقت برای ذخیره محتوای تمیز شده ایجاد می‌شود
+              tmpfile=$(mktemp)
+              # تمام خطوطی که با # شروع نمی‌شوند در فایل موقت ذخیره می‌شوند
+              grep -v '^#' "$file" > "$tmpfile"
+              # فایل اصلی با فایل موقت جایگزین می‌شود
+              mv "$tmpfile" "$file"
+            fi
+          done
+
+      # مرحله چهارم: کامیت و پوش کردن تغییرات در صورت وجود
+      - name: Commit and push if changed
+        run: |
+          # تنظیم نام و ایمیل برای کامیت‌ها
+          git config --global user.name 'mo13ammad'
+          git config --global user.email 'mohammadsaadati74@gmail.com'
+          
+          # اضافه کردن تمام فایل‌های داخل پوشه app به لیست تغییرات برای کامیت
+          git add app/
+          
+          # بررسی اینکه آیا تغییری برای کامیت کردن وجود دارد یا خیر
+          # اگر تغییری وجود نداشت، هیچ کامیتی ثبت نمی‌شود
+          if ! git diff --staged --quiet; then
+            echo "Changes detected. Committing and pushing..."
+            git commit -m "Auto-update IP ranges for social networks"
+            git push
+          else
+            echo "No changes to commit."
+          fi
